@@ -1,0 +1,204 @@
+################################################################################
+# Makefile.static  --  HYBRID build of ToolDAQFramework
+#
+# NodeDaemon and RemoteControl are linked so that the following libraries are
+# embedded STATICALLY into the executables:
+#       libServiceDiscovery , libDAQDataModelBase , libDAQStore
+# All the other ToolDAQ libraries stay DYNAMIC (.so):
+#       libDAQLogging , libToolDAQChain , libTempDAQDataModel , libTempDAQTools
+# Boost, ZeroMQ, pthread and ToolFrameworkCore also stay dynamic.
+#
+# Usage:
+#   make -f Makefile.static            # release build (-O3)
+#   make -f Makefile.static debug      # debug build
+#   make -f Makefile.static clean
+################################################################################
+
+ToolFrameworkDIR=../ToolFrameworkCore
+SOURCEDIR=`pwd`
+
+CXXFLAGS= -fPIC -Wpedantic -Wall -std=c++11 -Wno-comment -Wno-deprecated-declarations
+
+ifeq ($(MAKECMDGOALS),debug)
+CXXFLAGS+= -O0 -g -lSegFault -rdynamic -DDEBUG
+else
+CXXFLAGS+= -O3
+endif
+
+AR=arm-linux-gnueabihf-ar
+ARFLAGS=rcs
+
+ZMQLib= -L ../zeromq-4.0.7/lib -lzmq
+ZMQInclude= -I ../zeromq-4.0.7/include/
+
+BoostLib= -L ../boost_1_66_0/install/lib -lboost_date_time -lboost_serialization -lboost_iostreams
+BoostInclude= -isystem ../boost_1_66_0/install/include/
+
+TempDataModelInclude =
+TempDataModelLib =
+TempToolsInclude =
+TempToolsLib =
+
+Includes= -I $(ToolFrameworkDIR)/include/ -I $(SOURCEDIR)/include/ -I $(SOURCEDIR)/tempinclude/ $(ZMQInclude) $(BoostInclude)
+
+################################################################################
+# Link configuration
+################################################################################
+
+# ToolDAQ libraries linked DYNAMICALLY (.so) via -l
+SharedToolDAQLibs= -L $(SOURCEDIR)/lib/ -lTempDAQDataModel -lTempDAQTools -lToolDAQChain -lDAQLogging
+
+# ToolDAQ libraries embedded STATICALLY into the executable.
+# --whole-archive forces ALL objects of these archives into the binary (so the
+# dynamic libs above can resolve their symbols against them at run time).
+# This MUST be paired with -rdynamic on the link line (see the recipes below)
+# so those embedded symbols are exported to the dynamically-loaded .so files.
+StaticEmbedLibs= -Wl,--whole-archive \
+  $(SOURCEDIR)/lib/libServiceDiscovery.a \
+  $(SOURCEDIR)/lib/libDAQDataModelBase.a \
+  $(SOURCEDIR)/lib/libDAQStore.a \
+  -Wl,--no-whole-archive
+
+# ToolFrameworkCore + system dependencies (dynamic)
+ExternalLibs= -L $(ToolFrameworkDIR)/lib/ -lToolChain -lDataModelBase -lLogging -lStore $(BoostLib) $(ZMQLib) -lpthread
+
+# Full link line for NodeDaemon / RemoteControl (hybrid)
+Libs= $(SharedToolDAQLibs) $(StaticEmbedLibs) $(ExternalLibs)
+
+# Fully-dynamic link line, used for 'main' (kept as in the stock build)
+LibsDynamic= -L $(SOURCEDIR)/lib/ -lTempDAQDataModel -lTempDAQTools -lToolDAQChain -lServiceDiscovery -lDAQDataModelBase -lDAQStore -lDAQLogging $(BoostLib) $(ZMQLib) -L $(ToolFrameworkDIR)/lib/ -lToolChain -lDataModelBase -lpthread -lLogging -lStore
+
+################################################################################
+# Library lists
+################################################################################
+
+# Built as static archives (.a)
+STATIC_LIBS=lib/libServiceDiscovery.a lib/libDAQDataModelBase.a lib/libDAQStore.a
+
+# Built as shared objects (.so)
+SHARED_LIBS=lib/libDAQLogging.so lib/libToolDAQChain.so lib/libTempDAQDataModel.so lib/libTempDAQTools.so
+
+# Both, used as prerequisites for 'main' which links everything dynamically.
+# (main needs the .so versions of the three "static" libs as well; see note.)
+LIBRARIES=$(STATIC_LIBS) $(SHARED_LIBS)
+
+HEADERS:=$(patsubst %.h, include/%.h, $(filter %.h, $(subst /, ,$(wildcard src/*/*.h) )))
+TempDataModelHEADERS:=$(patsubst %.h, tempinclude/%.h, $(filter %.h, $(subst /, , $(wildcard DataModel/*.h))))
+TempToolHEADERS:=$(patsubst %.h, tempinclude/%.h, $(filter %.h, $(subst /, , $(wildcard UserTools/*/*.h) $(wildcard UserTools/*.h))))
+
+SOURCEFILES:=$(patsubst %.cpp, %.o, $(wildcard src/*.cpp) $(wildcard DataModel/*.cpp) $(wildcard UserTools/*.cpp) $(wildcard UserTools/*/*.cpp)) $(patsubst %.c, %.o, $(wildcard src/*.c) $(wildcard DataModel/*.c) $(wildcard UserTools/*.c) $(wildcard UserTools/*/*.c))
+
+################################################################################
+# Targets
+################################################################################
+
+# 'main' is excluded by default because it needs the shared (.so) versions of
+# the three libraries that we build only as .a here. Build it with the stock
+# Makefile, or run 'make -f Makefile.static main' after also producing those
+# .so files. NodeDaemon and RemoteControl are the hybrid targets requested.
+all: $(HEADERS) $(TempDataModelHEADERS) $(TempToolHEADERS) $(SOURCEFILES) $(STATIC_LIBS) $(SHARED_LIBS) NodeDaemon RemoteControl
+
+debug: all
+
+NodeDaemon: src/NodeDaemon/NodeDaemon.o $(STATIC_LIBS) $(SHARED_LIBS) $(HEADERS) | $(SOURCEFILES)
+	@echo -e "\e[38;5;11m\n*************** Making " $@ " (hybrid static/dynamic) ****************\e[0m"
+	arm-linux-gnueabihf-g++ $(CXXFLAGS) -rdynamic $< -o $@ $(Includes) $(Libs)
+
+RemoteControl: src/RemoteControl/RemoteControl.o $(STATIC_LIBS) $(SHARED_LIBS) $(HEADERS) | $(SOURCEFILES)
+	@echo -e "\e[38;5;11m\n*************** Making " $@ " (hybrid static/dynamic) ****************\e[0m"
+	arm-linux-gnueabihf-g++ $(CXXFLAGS) -rdynamic $< -o $@ $(Includes) $(Libs)
+
+# main: fully dynamic (needs the .so version of all libs, see note above)
+main: src/main.o $(LIBRARIES) $(HEADERS) $(TempDataModelHEADERS) $(TempToolHEADERS) | $(SOURCEFILES)
+	@echo -e "\e[38;5;11m\n*************** Making " $@ " (dynamic) ****************\e[0m"
+	arm-linux-gnueabihf-g++ $(CXXFLAGS) $< -o $@ $(Includes) $(LibsDynamic) $(TempDataModelInclude) $(TempDataModelLib) $(TempToolsInclude) $(TempToolsLib)
+
+include/%.h:
+	@echo -e "\e[38;5;87m\n*************** sym linking headers ****************\e[0m"
+	ln -s $(SOURCEDIR)/$(filter %$(strip $(patsubst include/%.h, /%.h, $@)), $(wildcard src/*/*.h) ) $@
+
+tempinclude/%.h:
+	@echo -e "\e[38;5;87m\n*************** sym linking headers ****************\e[0m"
+	ln -s $(SOURCEDIR)/$(filter %$(strip $(patsubst tempinclude/%.h, /%.h, $@)), $(wildcard DataModel/*.h) $(wildcard UserTools/*/*.h) $(wildcard UserTools/*.h)) $@
+
+src/%.o : src/%.cpp $(HEADERS)
+	@echo -e "\e[38;5;214m\n*************** Making " $@ "****************\e[0m"
+	arm-linux-gnueabihf-g++ $(CXXFLAGS) -c $< -o $@ $(Includes)
+
+src/%.o : src/%.c $(HEADERS)
+	@echo -e "\e[38;5;214m\n*************** Making " $@ "****************\e[0m"
+	arm-linux-gnueabihf-g++ $(CXXFLAGS) -c $< -o $@ $(Includes)
+
+UnitTests/%.o : UnitTests/%.cpp $(HEADERS)
+	@echo -e "\e[38;5;214m\n*************** Making " $@ "****************\e[0m"
+	arm-linux-gnueabihf-g++ $(CXXFLAGS) -c $< -o $@ $(Includes)
+
+UserTools/%.o : UserTools/%.cpp $(HEADERS) $(TempDataModelHEADERS) UserTools/%.h
+	@echo -e "\e[38;5;214m\n*************** Making " $@ "****************\e[0m"
+	arm-linux-gnueabihf-g++ $(CXXFLAGS) -c $< -o $@ $(Includes) $(TempDataModelInclude) $(TempToolsInclude)
+
+UserTools/Factory/Factory.o : UserTools/Factory/Factory.cpp $(HEADERS) $(TempDataModelHEADERS)
+	@echo -e "\e[38;5;214m\n*************** Making " $@ "****************\e[0m"
+	arm-linux-gnueabihf-g++ $(CXXFLAGS) -c $< -o $@ $(Includes) $(TempDataModelInclude) $(TempToolsInclude)
+
+DataModel/%.o : DataModel/%.cpp DataModel/%.h $(HEADERS) $(TempDataModelHEADERS)
+	@echo -e "\e[38;5;214m\n*************** Making " $@ "****************\e[0m"
+	arm-linux-gnueabihf-g++ $(CXXFLAGS) -c $< -o $@ $(Includes) $(TempDataModelInclude)
+
+################################################################################
+# STATIC archives (ar rcs)  --  the three libs embedded into the executables
+################################################################################
+
+lib/libServiceDiscovery.a: $(patsubst %.cpp, %.o , $(wildcard src/ServiceDiscovery/*.cpp)) $(patsubst %.c, %.o , $(wildcard src/ServiceDiscovery/*.c)) | $(HEADERS)
+	@echo -e "\e[38;5;201m\n*************** Making " $@ " (static) ****************\e[0m"
+	$(AR) $(ARFLAGS) $@ $^
+
+lib/libDAQDataModelBase.a: $(patsubst %.cpp, %.o , $(wildcard src/DAQDataModelBase/*.cpp)) | $(HEADERS)
+	@echo -e "\e[38;5;201m\n*************** Making " $@ " (static) ****************\e[0m"
+	$(AR) $(ARFLAGS) $@ $^
+
+lib/libDAQStore.a: $(patsubst %.cpp, %.o , $(wildcard src/Store/*.cpp)) | $(HEADERS)
+	@echo -e "\e[38;5;201m\n*************** Making " $@ " (static) ****************\e[0m"
+	$(AR) $(ARFLAGS) $@ $^
+
+################################################################################
+# SHARED libraries (.so)  --  everything else stays dynamic
+################################################################################
+
+lib/libDAQLogging.so: $(patsubst %.cpp, %.o , $(wildcard src/DAQLogging/*.cpp)) | $(HEADERS)
+	@echo -e "\e[38;5;201m\n*************** Making " $@ " (shared) ****************\e[0m"
+	arm-linux-gnueabihf-g++ $(CXXFLAGS) --shared $^ -o $@ $(Includes)
+
+lib/libToolDAQChain.so: $(patsubst %.cpp, %.o , $(wildcard src/ToolDAQChain/*.cpp)) | $(HEADERS)
+	@echo -e "\e[38;5;201m\n*************** Making " $@ " (shared) ****************\e[0m"
+	arm-linux-gnueabihf-g++ $(CXXFLAGS) --shared $^ -o $@ $(Includes)
+
+lib/libTempDAQDataModel.so: $(patsubst %.cpp, %.o , $(wildcard DataModel/*.cpp)) | $(HEADERS) $(TempDataModelHEADERS)
+	@echo -e "\e[38;5;201m\n*************** Making " $@ " (shared) ****************\e[0m"
+	arm-linux-gnueabihf-g++ $(CXXFLAGS) --shared $^ -o $@ $(Includes) $(TempDataModelInclude)
+
+lib/libTempDAQTools.so: $(patsubst %.cpp, %.o , $(wildcard UserTools/*/*.cpp)) | $(HEADERS) $(TempDataModelHEADERS) $(TempToolHEADERS)
+	@echo -e "\e[38;5;201m\n*************** Making " $@ " (shared) ****************\e[0m"
+	arm-linux-gnueabihf-g++ $(CXXFLAGS) --shared $^ -o $@ $(Includes) $(TempDataModelInclude) $(TempToolsInclude)
+
+################################################################################
+
+MCDebug: src/RemoteControl/MCDebug.o $(STATIC_LIBS) $(SHARED_LIBS) $(HEADERS) | $(SOURCEFILES)
+	@echo -e "\e[38;5;11m\n*************** Making " $@ " (hybrid static/dynamic) ****************\e[0m"
+	arm-linux-gnueabihf-g++ $(CXXFLAGS) -rdynamic $< -o $@ $(Includes) $(Libs)
+
+clean:
+	@echo -e "\e[38;5;201m\n*************** Cleaning up ****************\e[0m"
+	rm -f */*/*.o
+	rm -f */*.o
+	rm -f include/*.h
+	rm -f tempinclude/*.h
+	rm -f lib/*.a
+	rm -f lib/*.so
+	rm -f main
+	rm -f NodeDaemon
+	rm -f RemoteControl
+	rm -f MCDebug
+
+Docs:
+	doxygen Doxyfile

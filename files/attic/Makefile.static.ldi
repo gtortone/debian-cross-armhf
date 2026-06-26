@@ -1,0 +1,108 @@
+# ============================================================================
+#  Makefile.static  -  build the STATIC version of libDAQInterface
+#
+#  Uso:
+#     make -f Makefile.static            # crea lib/libDAQInterface.a + applicazioni
+#     make -f Makefile.static lib/libDAQInterface.a   # solo la libreria statica
+#     make -f Makefile.static debug      # build con simboli di debug
+#     make -f Makefile.static clean
+#
+#  La libreria statica (.a) e' un semplice archivio del codice oggetto di
+#  DAQInterface. Le dipendenze (ZMQ, Boost, ToolDAQ, ToolFramework) NON vengono
+#  inglobate nell'archivio: vanno linkate quando si costruisce l'eseguibile
+#  finale (vedi i target Example/Example, Testing/Test, ecc.).
+# ============================================================================
+
+Dependencies=./Dependencies
+
+CXXFLAGS=-g -fmax-errors=3 -std=c++20 -Werror=array-bounds -Werror=return-type -Wpedantic -Wno-deprecated-declarations
+
+ifeq ($(MAKECMDGOALS),debug)
+CXXFLAGS+= -O0 -lSegFault -rdynamic -DDEBUG
+else
+CXXFLAGS+= -O3
+endif
+
+# ---- Percorsi delle dipendenze (identici al Makefile originale) ------------
+ZMQLib= -L $(Dependencies)/zeromq-4.0.7/lib -lzmq
+ZMQInclude= -I $(Dependencies)/zeromq-4.0.7/include/
+
+BoostLib= -L $(Dependencies)/boost_1_66_0/install/lib -lboost_date_time -lboost_serialization -lboost_iostreams
+BoostInclude= -I $(Dependencies)/boost_1_66_0/install/include
+
+ToolDAQLib= -L $(Dependencies)/ToolDAQFramework/lib -lServiceDiscovery -lDAQDataModelBase -lDAQStore
+ToolDAQInclude= -I $(Dependencies)/ToolDAQFramework/include
+
+ToolFrameworkLib= -L $(Dependencies)/ToolFrameworkCore/lib -lStore -lDataModelBase
+ToolFrameworkInclude= -I $(Dependencies)/ToolFrameworkCore/include
+
+# Insieme dei soli -I (servono per compilare l'oggetto)
+INCLUDES= -I include $(ZMQInclude) $(ToolDAQInclude) $(ToolFrameworkInclude) $(BoostInclude)
+
+# Insieme dei -L/-l (servono SOLO al link finale degli eseguibili)
+DEPLIBS= -lpthread $(ToolDAQLib) $(ToolFrameworkLib) $(BoostLib) $(ZMQLib) $(ToolDAQLib) $(BoostLib)
+
+# La libreria statica da produrre
+STATIC_LIB= lib/libDAQInterface.a
+
+# Sorgenti che fanno scattare la ricompilazione (escluso il dizionario ROOT)
+sources= $(filter-out %DAQInterfaceClassDict.cpp, $(wildcard src/*.cpp) $(wildcard include/*.h))
+
+# ----------------------------------------------------------------------------
+.PHONY: all debug clean lib-only
+
+debug: all
+
+# Per default: libreria statica + le applicazioni d'esempio linkate ad essa
+all: $(STATIC_LIB) Win_Mac_translation Example/Example Testing/Test RemoteControl
+
+# Comodo se vuoi SOLO l'archivio statico
+lib-only: $(STATIC_LIB)
+
+# ---- 1) Compilazione dell'oggetto ------------------------------------------
+# -fPIC e' mantenuto cosi' l'archivio statico puo' essere eventualmente
+# linkato anche dentro una shared library. Se ti serve solo per eseguibili
+# puoi rimuoverlo per un codice leggermente piu' veloce.
+lib/DAQInterface.o: $(sources)
+	arm-linux-gnueabihf-g++ $(CXXFLAGS) -fPIC -c src/DAQInterface.cpp -o lib/DAQInterface.o $(INCLUDES)
+
+# ---- 2) Creazione dell'archivio statico ------------------------------------
+$(STATIC_LIB): lib/DAQInterface.o
+	arm-linux-gnueabihf-ar rcs $(STATIC_LIB) lib/DAQInterface.o
+	ranlib $(STATIC_LIB)
+
+# ----------------------------------------------------------------------------
+#  Applicazioni linkate contro la libreria STATICA.
+#  Si referenzia l'archivio per percorso completo ($(STATIC_LIB)) invece di
+#  -lDAQInterface: cosi' si forza l'uso della versione .a anche se nella stessa
+#  cartella lib/ esiste pure la .so. L'archivio va PRIMA delle dipendenze.
+# ----------------------------------------------------------------------------
+
+Win_Mac_translation: Win_Mac_translation.cpp $(STATIC_LIB)
+	arm-linux-gnueabihf-g++ $(CXXFLAGS) Win_Mac_translation.cpp -o Win_Mac_translation -I ./include/ $(STATIC_LIB) $(DEPLIBS)
+
+# esempio principale (mostra la maggior parte delle funzionalita')
+Example/Example: Example/Example.cpp $(STATIC_LIB)
+	arm-linux-gnueabihf-g++ $(CXXFLAGS) Example/Example.cpp -o $@ -I ./include/ $(STATIC_LIB) $(DEPLIBS)
+
+# test funzionali
+Testing/Test: Testing/Test.cpp $(STATIC_LIB)
+	arm-linux-gnueabihf-g++ $(CXXFLAGS) Testing/Test.cpp -o $@ -I ./include/ $(STATIC_LIB) $(DEPLIBS)
+
+# test di throttle
+Testing/Test2: Testing/Test2.cpp $(STATIC_LIB)
+	arm-linux-gnueabihf-g++ $(CXXFLAGS) Testing/Test2.cpp -o $@ -I ./include/ $(STATIC_LIB) $(DEPLIBS)
+
+# applicazione di controllo remoto
+RemoteControl: $(Dependencies)/ToolDAQFramework/src/RemoteControl/RemoteControl.cpp $(STATIC_LIB)
+	arm-linux-gnueabihf-g++ $(CXXFLAGS) $(Dependencies)/ToolDAQFramework/src/RemoteControl/RemoteControl.cpp -o RemoteControl -I ./include/ $(STATIC_LIB) $(DEPLIBS)
+
+# ----------------------------------------------------------------------------
+clean:
+	rm -f $(STATIC_LIB) \
+	      lib/DAQInterface.o \
+	      RemoteControl \
+	      Win_Mac_translation \
+	      Example/Example \
+	      Testing/Test \
+	      Testing/Test2

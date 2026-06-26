@@ -1,0 +1,151 @@
+# ============================================================================
+#  Makefile.static  --  builds the STATIC (.a) versions of ToolFrameworkCore
+# ----------------------------------------------------------------------------
+#  Usage:
+#     make -f Makefile.static              # optimised build (-O3)
+#     make -f Makefile.static debug        # debug build (-O0 -g -DDEBUG)
+#     make -f Makefile.static no_colour    # disable coloured logging
+#     make -f Makefile.static clean        # remove objects, symlinks, .a, main
+#
+#  Produces, in ./lib/ :
+#     libStore.a libLogging.a libDataModelBase.a
+#     libToolChain.a libTempDataModel.a libTempTools.a
+#  and (optionally) the 'main' executable linked against those archives.
+# ============================================================================
+
+SOURCEDIR:=`pwd`
+
+CXXFLAGS= -fPIC -Wpedantic -Wall -std=c++11 -Wno-comment -Wno-unused -Wextra -Wcast-align -Wcast-qual -Wctor-dtor-privacy -Wdisabled-optimization -Wformat=2 -Winit-self -Wlogical-op -Wmissing-declarations -Wmissing-include-dirs -Wnoexcept -Woverloaded-virtual -Wredundant-decls -Wshadow -Wsign-conversion -Wsign-promo -Wstrict-null-sentinel -Wstrict-overflow=5 -Wswitch-default -Wundef -Wno-deprecated-declarations #-Werror -Wold-style-cast
+
+ifeq ($(MAKECMDGOALS),debug)
+CXXFLAGS+= -O0 -g -lSegFault -rdynamic -DDEBUG
+else
+CXXFLAGS+= -O3
+endif
+
+ifeq ($(MAKECMDGOALS),no_colour)
+CXXFLAGS+= -DNO_COLOUR
+endif
+
+# Archiver used to build the static libraries.
+# 'r' = insert/replace members, 'c' = create if needed, 's' = write index (ranlib).
+AR= arm-linux-gnueabihf-ar
+ARFLAGS= rcs
+
+TempDataModelInclude =
+TempDataModelLib =
+TempToolsInclude =
+TempToolsLib =
+
+Includes=-I $(SOURCEDIR)/include/ -I $(SOURCEDIR)/tempinclude/
+
+# When linking against STATIC archives the order matters and any circular
+# dependency between the libraries must be resolved: --start-group/--end-group
+# makes the linker re-scan the group until all symbols are satisfied.
+Libs=-L $(SOURCEDIR)/lib/ -Wl,--start-group -lToolChain -lTempDataModel -lTempTools -lDataModelBase -lLogging -lStore -Wl,--end-group -lpthread
+
+LIBRARIES=lib/libStore.a lib/libLogging.a lib/libToolChain.a lib/libDataModelBase.a lib/libTempDataModel.a lib/libTempTools.a
+
+HEADERS:=$(patsubst %.h, include/%.h, $(filter %.h, $(subst /, ,$(wildcard src/*/*.h) )))
+TempDataModelHEADERS:=$(patsubst %.h, tempinclude/%.h, $(filter %.h, $(subst /, ,$(wildcard DataModel/*.h))))
+TempMyToolHEADERS:=$(patsubst %.h, tempinclude/%.h, $(filter %.h, $(subst /, ,$(wildcard UserTools/*/*.h) $(wildcard UserTools/*.h))))
+
+SOURCEFILES:=$(patsubst %.cpp, %.o, $(wildcard */*.cpp) $(wildcard */*/*.cpp))
+
+#.SECONDARY: $(%.o)
+
+all: $(HEADERS) $(TempDataModelHEADERS) $(TempMyToolHEADERS) $(SOURCEFILES) $(LIBRARIES) main
+
+no_colour: all
+
+debug: all
+
+# -----------------------------------------------------------------------------
+#  Executable (links against the static archives).
+#  If you only want the libraries you can remove 'main' from the 'all' target.
+# -----------------------------------------------------------------------------
+main: src/main.o $(LIBRARIES) $(HEADERS) $(TempDataModelHEADERS) $(TempMyToolHEADERS) | $(SOURCEFILES)
+	@echo -e "\e[38;5;11m\n*************** Making " $@ " ****************\e[0m"
+	arm-linux-gnueabihf-g++ $(CXXFLAGS) $< -o $@ $(Includes) $(Libs) $(TempDataModelInclude) $(TempDataModelLib) $(TempToolsInclude) $(TempToolsLib)
+
+# -----------------------------------------------------------------------------
+#  Header symlinks (identical to the shared Makefile)
+# -----------------------------------------------------------------------------
+include/%.h:
+	@echo -e "\e[38;5;87m\n*************** sym linking headers ****************\e[0m"
+	ln -s $(SOURCEDIR)/$(filter %$(strip $(patsubst include/%.h, /%.h, $@)), $(wildcard src/*/*.h) $(wildcard UserTools/*/*.h)) $@
+
+tempinclude/%.h:
+	@echo -e "\e[38;5;87m\n*************** sym linking headers ****************\e[0m"
+	ln -s $(SOURCEDIR)/$(filter %$(strip $(patsubst tempinclude/%.h, /%.h, $@)), $(wildcard DataModel/*.h) $(wildcard UserTools/*/*.h) $(wildcard UserTools/*.h)) $@
+
+# -----------------------------------------------------------------------------
+#  Object compilation (identical to the shared Makefile)
+# -----------------------------------------------------------------------------
+src/%.o : src/%.cpp $(HEADERS)
+	@echo -e "\e[38;5;214m\n*************** Making " $@ "****************\e[0m"
+	arm-linux-gnueabihf-g++ $(CXXFLAGS) -c $< -o $@ $(Includes)
+
+UnitTests/%.o : UnitTests/%.cpp $(HEADERS)
+	@echo -e "\e[38;5;214m\n*************** Making " $@ "****************\e[0m"
+	arm-linux-gnueabihf-g++ $(CXXFLAGS) -c $< -o $@ $(Includes)
+
+UserTools/Factory/Factory.o : UserTools/Factory/Factory.cpp $(HEADERS) $(TempDataModelHEADERS)
+	@echo -e "\e[38;5;214m\n*************** Making " $@ "****************\e[0m"
+	arm-linux-gnueabihf-g++ $(CXXFLAGS) -c $< -o $@ $(Includes) $(TempDataModelInclude) $(TempToolsInclude)
+
+UserTools/%.o : UserTools/%.cpp $(HEADERS) $(TempDataModelHEADERS) UserTools/%.h
+	@echo -e "\e[38;5;214m\n*************** Making " $@ "****************\e[0m"
+	arm-linux-gnueabihf-g++ $(CXXFLAGS) -c $< -o $@ $(Includes) $(TempDataModelInclude) $(TempToolsInclude)
+
+DataModel/%.o : DataModel/%.cpp DataModel/%.h $(HEADERS) $(TempDataModelHEADERS)
+	@echo -e "\e[38;5;214m\n*************** Making " $@ "****************\e[0m"
+	arm-linux-gnueabihf-g++ $(CXXFLAGS) -c $< -o $@ $(Includes) $(TempDataModelInclude)
+
+# -----------------------------------------------------------------------------
+#  Static libraries: archive the objects with 'ar' instead of 'arm-linux-gnueabihf-g++ --shared'.
+#  $^ contains only the .o prerequisites (the headers are order-only, after '|').
+#  We rm -f first so removed sources don't leave stale members in the archive.
+# -----------------------------------------------------------------------------
+lib/libStore.a: $(patsubst %.cpp, %.o , $(wildcard src/Store/*.cpp)) | $(HEADERS)
+	@echo -e "\e[38;5;201m\n*************** Making " $@ "****************\e[0m"
+	rm -f $@
+	$(AR) $(ARFLAGS) $@ $^
+
+lib/libLogging.a: $(patsubst %.cpp, %.o , $(wildcard src/Logging/*.cpp)) | $(HEADERS)
+	@echo -e "\e[38;5;201m\n*************** Making " $@ "****************\e[0m"
+	rm -f $@
+	$(AR) $(ARFLAGS) $@ $^
+
+lib/libDataModelBase.a: $(patsubst %.cpp, %.o , $(wildcard src/DataModelBase/*.cpp)) | $(HEADERS)
+	@echo -e "\e[38;5;201m\n*************** Making " $@ "****************\e[0m"
+	rm -f $@
+	$(AR) $(ARFLAGS) $@ $^
+
+lib/libToolChain.a: $(patsubst %.cpp, %.o , $(wildcard src/ToolChain/*.cpp)) | $(HEADERS)
+	@echo -e "\e[38;5;201m\n*************** Making " $@ "****************\e[0m"
+	rm -f $@
+	$(AR) $(ARFLAGS) $@ $^
+
+lib/libTempDataModel.a: $(patsubst %.cpp, %.o , $(wildcard DataModel/*.cpp)) | $(HEADERS) $(TempDataModelHEADERS)
+	@echo -e "\e[38;5;201m\n*************** Making " $@ "****************\e[0m"
+	rm -f $@
+	$(AR) $(ARFLAGS) $@ $^
+
+lib/libTempTools.a: $(patsubst %.cpp, %.o , $(wildcard UserTools/*/*.cpp)) | $(HEADERS) $(TempDataModelHEADERS) $(TempMyToolHEADERS)
+	@echo -e "\e[38;5;201m\n*************** Making " $@ "****************\e[0m"
+	rm -f $@
+	$(AR) $(ARFLAGS) $@ $^
+
+# -----------------------------------------------------------------------------
+clean:
+	@echo -e "\e[38;5;201m\n*************** Cleaning up ****************\e[0m"
+	rm -f */*/*.o
+	rm -f */*.o
+	rm -f include/*.h
+	rm -f tempinclude/*.h
+	rm -f lib/*.a
+	rm -f main
+
+Docs:
+	doxygen Doxyfile
